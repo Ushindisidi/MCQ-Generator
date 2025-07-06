@@ -4,6 +4,7 @@ import json
 import pandas as pd
 from dotenv import load_dotenv
 import traceback
+import re
 
 # LangChain imports
 from langchain_openai import ChatOpenAI
@@ -29,9 +30,9 @@ RESPONSE_JSON = {
             "a": "choice here",
             "b": "choice here", 
             "c": "choice here",
-            "d": "choice here",
+            "d": "choice here"
         },
-        "correct": "correct answer",
+        "correct": "correct answer"
     },
     "2": {
         "mcq": "multiple choice question",
@@ -39,9 +40,9 @@ RESPONSE_JSON = {
             "a": "choice here",
             "b": "choice here",
             "c": "choice here", 
-            "d": "choice here",
+            "d": "choice here"
         },
-        "correct": "correct answer",
+        "correct": "correct answer"
     },
     "3": {
         "mcq": "multiple choice question",
@@ -49,10 +50,10 @@ RESPONSE_JSON = {
             "a": "choice here",
             "b": "choice here",
             "c": "choice here",
-            "d": "choice here",
+            "d": "choice here"
         },
-        "correct": "correct answer",
-    },
+        "correct": "correct answer"
+    }
 }
 
 # Define PromptTemplates
@@ -76,14 +77,18 @@ Your Instructions for MCQ Generation:
 7. Do not repeat any questions or their options. Each question should be unique.
 
 Output Format (CRITICAL - Adhere Strictly):
-Provide your output as a JSON object that strictly adheres to the following RESPONSE_JSON format. 
-IMPORTANT: Your response must contain ONLY valid JSON. Do not include any explanatory text, markdown formatting, or code blocks.
-Start with {{ and end with }}. Nothing else.
+You must return ONLY a valid JSON object. Do not include any explanatory text, markdown formatting, or code blocks.
+Your response must start with {{ and end with }}. Nothing else.
 
-### RESPONSE_JSON Format (Example and Guide):
+The JSON must follow this exact structure:
 {response_json}
 
-Ensure the final output is a valid JSON object matching the RESPONSE_JSON structure exactly.
+IMPORTANT: 
+- Use double quotes for all strings
+- Do not use trailing commas
+- Ensure proper JSON syntax
+- Do not include any text before or after the JSON object
+- Each question should be numbered as a string ("1", "2", "3", etc.)
 """,
     input_variables=["text", "number", "subject", "tone", "response_json"]
 )
@@ -125,28 +130,79 @@ def generate_and_evaluate_quiz(inputs):
     }
 
 def clean_and_parse_json(json_string):
-    """Clean and parse JSON string from LLM response"""
+    """Clean and parse JSON string from LLM response with multiple fallback strategies"""
     try:
         # Remove any markdown formatting
         json_string = json_string.strip()
-        if json_string.startswith("json"):
+        
+        # Remove common markdown patterns
+        if json_string.startswith("```json"):
             json_string = json_string[7:]
-        if json_string.endswith(""):
-            json_string = json_string[:-3]
-        if json_string.startswith("```"):
+        elif json_string.startswith("```"):
             json_string = json_string[3:]
+        
+        if json_string.endswith("```"):
+            json_string = json_string[:-3]
         
         # Remove any leading/trailing whitespace
         json_string = json_string.strip()
+        
+        # Find JSON boundaries if there's extra text
+        start_idx = json_string.find('{')
+        end_idx = json_string.rfind('}') + 1
+        
+        if start_idx != -1 and end_idx > start_idx:
+            json_string = json_string[start_idx:end_idx]
+        
+        # Fix common JSON issues
+        json_string = fix_common_json_issues(json_string)
         
         # Parse JSON
         return json.loads(json_string)
     except json.JSONDecodeError as e:
         st.error(f"JSON parsing error: {e}")
+        st.error(f"Problematic JSON string: {json_string[:500]}...")
         return None
     except Exception as e:
         st.error(f"Unexpected error while parsing JSON: {e}")
         return None
+
+def fix_common_json_issues(json_str):
+    """Fix common JSON formatting issues"""
+    # Remove trailing commas before closing braces
+    json_str = re.sub(r',\s*}', '}', json_str)
+    json_str = re.sub(r',\s*]', ']', json_str)
+    
+    # Fix single quotes to double quotes (basic fix)
+    json_str = re.sub(r"'([^']*)':", r'"\1":', json_str)
+    json_str = re.sub(r":\s*'([^']*)'", r': "\1"', json_str)
+    
+    return json_str
+
+def validate_quiz_structure(quiz_data):
+    """Validate that the quiz has the expected structure"""
+    if not isinstance(quiz_data, dict):
+        return False, "Quiz data is not a dictionary"
+    
+    required_keys = ["mcq", "options", "correct"]
+    
+    for q_num, question in quiz_data.items():
+        if not isinstance(question, dict):
+            return False, f"Question {q_num} is not a dictionary"
+        
+        for key in required_keys:
+            if key not in question:
+                return False, f"Question {q_num} missing '{key}' field"
+        
+        if not isinstance(question["options"], dict):
+            return False, f"Question {q_num} options is not a dictionary"
+        
+        expected_options = {"a", "b", "c", "d"}
+        actual_options = set(question["options"].keys())
+        if actual_options != expected_options:
+            return False, f"Question {q_num} has incorrect option keys: {actual_options}"
+    
+    return True, "Valid structure"
 
 # --- Streamlit UI Components ---
 st.set_page_config(
@@ -159,13 +215,13 @@ st.set_page_config(
 st.title("🧠 AI-Powered MCQ Generator")
 st.markdown("Generate multiple-choice questions from your text using advanced AI.")
 
-# I added some helpful information
-with st.expander("ℹ How to use this tool"):
+# Helpful information
+with st.expander("ℹnfo:How to use this tool"):
     st.markdown("""
-    1. *Enter your text*: Paste the content you want to create questions from
-    2. *Set parameters*: Choose number of questions, subject, and tone
-    3. *Generate*: Click the button and wait for AI to create your quiz
-    4. *Download*: Get your quiz as a CSV file for use in other applications
+    1. **Enter your text**: Paste the content you want to create questions from
+    2. **Set parameters**: Choose number of questions, subject, and tone
+    3. **Generate**: Click the button and wait for AI to create your quiz
+    4. **Download**: Get your quiz as a CSV file for use in other applications
     """)
 
 # Input components
@@ -199,17 +255,18 @@ with col2:
     )
 
 # Generate button
-if st.button("🚀 Generate MCQs", type="primary"):
+if st.button(" Generate MCQs", type="primary"):
     if not input_text.strip():
-        st.warning("⚠ Please provide some text to generate MCQs.")
+        st.warning("⚠️ Please provide some text to generate MCQs.")
         st.stop()
 
-    if len(input_text.strip()) < 100:
-        st.warning("⚠ Your text seems quite short. Consider providing more content for better questions.")
+    if len(input_text.strip()) < 5:
+        st.warning("⚠️ Your text seems quite short. Consider providing more content for better questions.")
 
     with st.spinner("🤖 Generating and evaluating MCQs... This may take a moment."):
         try:
-            json_response_str = json.dumps(RESPONSE_JSON)
+            # Create a clean JSON string for the template
+            json_response_str = json.dumps(RESPONSE_JSON, indent=2)
             
             input_data = {
                 "text": input_text,
@@ -222,7 +279,7 @@ if st.button("🚀 Generate MCQs", type="primary"):
             with get_openai_callback() as cb:
                 response = generate_and_evaluate_quiz(input_data)
                 
-                # I want to display token usage in sidebar
+                # Display token usage in sidebar
                 with st.sidebar:
                     st.subheader("📊 Token Usage & Cost")
                     st.metric("Total Tokens", cb.total_tokens)
@@ -233,13 +290,21 @@ if st.button("🚀 Generate MCQs", type="primary"):
             quiz_output_raw = response.get("quiz_output")
             review_output = response.get("review_output")
 
+            # Debug: Show raw output
+            with st.expander("🔍 Raw AI Output (for debugging)"):
+                st.text_area("Raw AI Output:", quiz_output_raw, height=200)
+
             # Parse the quiz JSON
             parsed_quiz = clean_and_parse_json(quiz_output_raw)
             
             if parsed_quiz is None:
                 st.error("❌ Failed to parse the quiz JSON. Please try again.")
-                with st.expander("🔍 Raw Output (for debugging)"):
-                    st.text_area("Raw AI Output:", quiz_output_raw, height=200)
+                st.stop()
+
+            # Validate quiz structure
+            is_valid, validation_message = validate_quiz_structure(parsed_quiz)
+            if not is_valid:
+                st.error(f"❌ Invalid quiz structure: {validation_message}")
                 st.stop()
 
             # Process the quiz data
@@ -250,11 +315,11 @@ if st.button("🚀 Generate MCQs", type="primary"):
                         mcq = value["mcq"]
                         if isinstance(value["options"], dict):
                             options = " | ".join(
-                                [f"{ok}: {ov}" for ok, ov in value["options"].items()]
+                                [f"{ok.upper()}: {ov}" for ok, ov in value["options"].items()]
                             )
                         else:
                             options = "Malformed Options"
-                            st.warning(f"⚠ Malformed options for question {key}")
+                            st.warning(f"⚠️ Malformed options for question {key}")
 
                         correct = value["correct"]
                         quiz_table_data.append({
@@ -263,7 +328,7 @@ if st.button("🚀 Generate MCQs", type="primary"):
                             "Correct Answer": correct
                         })
                     else:
-                        st.warning(f"⚠ Skipping malformed question {key}")
+                        st.warning(f"⚠️ Skipping malformed question {key}")
 
             if quiz_table_data:
                 st.success(f"✅ Successfully generated {len(quiz_table_data)} MCQs!")
@@ -286,7 +351,7 @@ if st.button("🚀 Generate MCQs", type="primary"):
                 st.subheader("📋 Evaluation Review")
                 st.write(review_output)
 
-                # Save quiz data to session state for potential reuse
+                # Save quiz data 
                 st.session_state.last_quiz = {
                     "quiz_data": quiz_table_data,
                     "subject": subject,
@@ -309,4 +374,4 @@ if "last_quiz" in st.session_state:
 
 # Footer
 st.markdown("---")
-st.markdown("Made with Sidi ❤ using Streamlit and OpenAI | [Source Code](https://github.com/Ushindisidi)")
+st.markdown("Made with ❤️ using Streamlit and OpenAI | [Source Code](https://github.com/Ushindisidi)")
