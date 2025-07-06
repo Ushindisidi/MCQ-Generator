@@ -5,10 +5,10 @@ import pandas as pd
 from dotenv import load_dotenv
 
 from langchain_openai import ChatOpenAI
-from langchain.prompts import PromptTemplate
-from langchain.callbacks import get_openai_callback # For token tracking
+from langchain_core.prompts import PromptTemplate
+from langchain_community.callbacks import get_openai_callback# For token tracking
 
-# NEW IMPORTS for LCEL (LangChain Expression Language)
+# IMPORTS for LCEL (LangChain Expression Language)
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.runnables import RunnablePassthrough, RunnableParallel, RunnableMap
 # from pypdf import PdfReader
@@ -24,40 +24,38 @@ if not KEY:
 #  Initialize LLM
 llm = ChatOpenAI(openai_api_key=KEY, model="gpt-3.5-turbo", temperature=0.5)
 #  Define RESPONSE_JSON
-# This serves as a strict guide for the LLM's output format.
 RESPONSE_JSON = {
     "1": {
-        "mcq": "What is the primary purpose of a virtual environment in Python?",
+        "mcq": "multiple choice question",
         "options": {
-            "a": "To speed up code execution",
-            "b": "To isolate project dependencies",
-            "c": "To manage system-wide Python installations",
-            "d": "To debug Python scripts more easily",
+            "a": "choice here",
+            "b": "choice here",
+            "c": "choice here",
+            "d": "choice here",
         },
-        "correct": "b",
+        "correct": "correct answer",
     },
     "2": {
-        "mcq": "Which Git command is used to initialize a new local repository?",
+        "mcq": "multiple choice question",
         "options": {
-            "a": "git start",
-            "b": "git new",
-            "c": "git init",
-            "d": "git create",
+            "a": "choice here",
+            "b": "choice here",
+            "c": "choice here",
+            "d": "choice here",
         },
-        "correct": "c",
+        "correct": "correct answer",
     },
     "3": {
-        "mcq": "LangChain helps in orchestrating what type of models?",
+        "mcq": "multiple choice question",
         "options": {
-            "a": "Traditional machine learning models",
-            "b": "Large Language Models (LLMs)",
-            "c": "Image recognition models",
-            "d": "Database management systems",
+            "a": "choice here",
+            "b": "choice here",
+            "c": "choice here",
+            "d": "choice here",
         },
-        "correct": "b",
+        "correct": "correct answer",
     },
 }
-
 #  Define TEMPLATE 
 TEMPLATE="""
 You are a highly proficient and experienced educational expert specializing in creating challenging, clear, and well-structured Multiple Choice Questions (MCQs).
@@ -109,39 +107,72 @@ quiz_evaluation_prompt = PromptTemplate(
     template=TEMPLATE2
 )
 
-#  Define Individual Runnables using LCEL 
-# These are the atomic operations.
+# Define Individual Runnables using LCEL 
 quiz_chain_runnable = quiz_generation_prompt | llm | StrOutputParser()
 review_chain_runnable = quiz_evaluation_prompt | llm | StrOutputParser()
 
+#  Combine into a final chain using LCEL
+generate_evaluate_chain = (
+    #  ensurimg all inputs are properly formatted for the quiz generation
+    RunnablePassthrough()
+    # Generate the quiz 
+    .assign(quiz_output=quiz_chain_runnable)
+    # Preparing inputs for the review chain
+    .assign(review_output=
+        RunnableMap({
+            "subject": lambda x: x["subject"],
+            "quiz": lambda x: x["quiz_output"], 
+        })
+        | review_chain_runnable
+    )
+    # Return both outputs
+    .pick(["quiz_output", "review_output"])
+)
 
-#  Combine into a final chain using LCEL (REPLACES SequentialChain)
-# I am using RunnablePassthrough and .assign() to manage inputs and outputs sequentially.
+
+def generate_and_evaluate_quiz(inputs):
+    """
+    Generate quiz and evaluation in a simple, reliable way
+    """
+    # Generate quiz
+    quiz_result = quiz_chain_runnable.invoke(inputs)
+    
+    # Preparing review inputs
+    review_inputs = {
+        "subject": inputs["subject"],
+        "quiz": quiz_result
+    }
+    
+    # Generate review
+    review_result = review_chain_runnable.invoke(review_inputs)
+    
+    return {
+        "quiz_output": quiz_result,
+        "review_output": review_result
+    }
 
 generate_evaluate_chain = (
-    RunnableMap({
-    # This dictionary ensures all expected variables are available for subsequent steps.
-    
-        "text": RunnablePassthrough(),
-        "number": RunnablePassthrough(),
-        "subject": RunnablePassthrough(),
-        "tone": RunnablePassthrough(),
-        "response_json": RunnablePassthrough(),
-    })
-    # Generate the quiz. The output of quiz_chain_runnable (the quiz string)
-    # will be stored under the key "quiz_output" by .assign().
-    # The original inputs are still part of the chain's state.
-    .assign(quiz_output=quiz_chain_runnable)
-    #  prepare inputs for the review_chain_runnable.
-    .assign(review_output=
-        RunnableParallel(
-            subject=lambda x: x["subject"],    # Access 'subject' from the overall chain state (x)
-            quiz=lambda x: x["quiz_output"],   # Access the 'quiz_output' from the previous step's result (x)
-        )
-        | review_chain_runnable # Pipe these prepared inputs to the review runnable
+    {
+        "text": lambda x: x["text"],
+        "number": lambda x: x["number"], 
+        "subject": lambda x: x["subject"],
+        "tone": lambda x: x["tone"],
+        "response_json": lambda x: x["response_json"],
+    }
+    | RunnablePassthrough.assign(
+        quiz_output=quiz_chain_runnable
     )
-    # This will be the final dictionary returned by generate_evaluate_chain.invoke().
-    .pick(["quiz_output", "review_output"]))
+    | RunnablePassthrough.assign(
+        review_output=RunnableMap({
+            "subject": lambda x: x["subject"],
+            "quiz": lambda x: x["quiz_output"],
+        }) | review_chain_runnable
+    )
+    | RunnableMap({
+        "quiz_output": lambda x: x["quiz_output"],
+        "review_output": lambda x: x["review_output"],
+    })
+)
 
 #  Main Execution Block
 if __name__ == "__main__":
@@ -164,10 +195,10 @@ if __name__ == "__main__":
     SUBJECT = "biology"
     TONE = "simple"
 
-    #  Convert RESPONSE_JSON to string for the prompt 
+    # Convert RESPONSE_JSON to string for the prompt 
     json_response_str = json.dumps(RESPONSE_JSON)
 
-    # Preparing input data for the LCEL chain 
+    # Preparing input data for the chain 
     input_data = {
         "text": TEXT,
         "number": NUMBER,
@@ -180,21 +211,18 @@ if __name__ == "__main__":
     print(f"Text length: {len(TEXT)} characters")
     print(f"Requested: {NUMBER} MCQs for {SUBJECT} students in a {TONE} tone.")
 
-    #  Running the LCEL Chain and Track Token Usage 
+    # Running the Chain and Track Token Usage 
     with get_openai_callback() as cb:
         try:
-            # Use .invoke() for LCEL chains to get the result
-            response = generate_evaluate_chain.invoke(input_data)
+            response = generate_and_evaluate_quiz(input_data)
 
             print(f"\n--- Token Usage & Cost ---")
             print(f"Total Tokens: {cb.total_tokens}")
             print(f"Prompt Tokens: {cb.prompt_tokens}")
             print(f"Completion Tokens: {cb.completion_tokens}")
-            print(f"Total Cost (USD): ${cb.total_cost:.6f}") # Format to 6 decimal places
+            print(f"Total Cost (USD): ${cb.total_cost:.6f}")
 
             # Process and Print Outputs
-            # The output of generate_evaluate_chain.invoke() is now a dictionary
-            # with 'quiz_output' and 'review_output' keys (as defined by .pick())
             quiz_output_raw = response.get("quiz_output")
             review_output = response.get("review_output")
 
@@ -208,70 +236,52 @@ if __name__ == "__main__":
             try:
                 parsed_quiz = json.loads(quiz_output_raw)
                 print("\n--- Parsed Quiz (DataFrame) ---")
-                quiz_df = pd.DataFrame(parsed_quiz).T # Transpose to make question numbers as rows
-                print(quiz_df)
+                
+                # Convert parsed_quiz dict to a DataFrame for display
+                quiz_table_data = []
+                
+                if isinstance(parsed_quiz, dict):
+                    for key, value in parsed_quiz.items():
+                        if isinstance(value, dict) and all(k in value for k in ["mcq", "options", "correct"]):
+                            mcq = value["mcq"]
+                            
+                            if isinstance(value["options"], dict):
+                                options = " | ".join(
+                                    [f"{option_key}: {option_value}" for option_key, option_value in value["options"].items()]
+                                )
+                            else:
+                                options = str(value["options"])
+                            
+                            correct = value["correct"]
+                            quiz_table_data.append({"MCQ": mcq, "Choices": options, "Correct": correct})
+                        else:
+                            print(f"Warning: Skipping malformed quiz question for key '{key}': {value}")
+                
+                if quiz_table_data:
+                    quiz_df_formatted = pd.DataFrame(quiz_table_data)
+                    print(quiz_df_formatted)
 
-                with open("Response.json", "w", encoding="utf-8") as f:
-                    json.dump(parsed_quiz, f, indent=4)
-                print("\nParsed quiz saved to Response.json")
+                    with open("Response.json", "w", encoding="utf-8") as f:
+                        json.dump(parsed_quiz, f, indent=4)
+                    print("\nParsed quiz saved to Response.json")
+                    
+                    # Save to CSV
+                    quiz_df_formatted.to_csv("Biology.csv", index=False)
+                    print("Formatted quiz successfully saved to Biology.csv")
+                else:
+                    print("No valid quiz data found to display.")
 
             except json.JSONDecodeError as e:
                 print(f"\nERROR: Failed to parse the quiz JSON output from the LLM.")
                 print(f"JSON Decode Error: {e}")
-                print(f"Check the raw output above for formatting issues. LLM might not have adhered to JSON strictly.")
+                print(f"Raw output that failed to parse:")
+                print(f"'{quiz_output_raw}'")
+                print(f"Check the raw output above for formatting issues.")
             except Exception as e:
                 print(f"\nAn unexpected error occurred while processing the quiz output: {e}")
-                print(traceback.format_exc()) # Print full traceback for other errors
+                print(f"Raw quiz output: {quiz_output_raw}")
+                print(traceback.format_exc())
 
         except Exception as e:
             print(f"\nAn error occurred during the chain execution: {e}")
-            print(traceback.format_exc()) # Print full traceback for errors during LLM call
-
-import pandas as pd
-
-# populating quiz_table_data and save to CSV 
-
-parsed_quiz = {
-    "1": {
-        "mcq": "What is the primary function of a neuron?",
-        "options": {"a": "To digest food", "b": "To transmit nerve impulses", "c": "To filter blood", "d": "To produce hormones"},
-        "correct": "b"
-    },
-    "2": {
-        "mcq": "Which part of the cell is responsible for generating energy through cellular respiration?",
-        "options": {"a": "Nucleus", "b": "Ribosome", "c": "Mitochondria", "d": "Cell wall"},
-        "correct": "c"
-    }
-}
-
-quiz_table_data = []
-if parsed_quiz: # Ensure parsed_quiz is not empty or None
-    for key, value in parsed_quiz.items():
-        # Defensive check for expected keys to avoid errors if LLM output is malformed
-        if all(k in value for k in ["mcq", "options", "correct"]):
-            mcq = value["mcq"]
-            # Format options into a single string "a: Opt A | b: Opt B | c: Opt C | d: Opt D"
-            options = " | ".join(
-                [
-                    f"{option_key}: {option_value}"
-                    for option_key, option_value in value["options"].items()
-                ]
-            )
-            correct = value["correct"]
-            quiz_table_data.append({"MCQ": mcq, "Choices": options, "Correct": correct})
-        else:
-            print(f"Warning: Skipping malformed quiz question (missing 'mcq', 'options', or 'correct' keys): {value}")
-else:
-    print("No parsed quiz data available for table formatting.")
-
-# Convert to DataFrame and save to CSV
-if quiz_table_data: 
-    quiz_df_formatted = pd.DataFrame(quiz_table_data)
-    quiz_df_formatted.to_csv("machinelearning.csv", index=False) # Save to CSV
-    print("\nFormatted quiz successfully saved to machinelearning.csv")
-
-    #  Print the formatted DataFrame to console
-    print("\n--- Formatted Quiz (for CSV) ---")
-    print(quiz_df_formatted)
-else:
-    print("\nNo formatted quiz data available to save to CSV.")
+            print(traceback.format_exc())
